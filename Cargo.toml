@@ -1,0 +1,18 @@
+[package]
+name = "detrack-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "detrack_proxy"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["http1", "client", "server"] }
+hyper-util = { version = "0.1", features = ["client", "server", "http1", "tokio", "client-legacy"] }
+http-body-util = "0.1"
+bytes = "1.0"
+egui = "0.31.1"
+eframe = { version = "0.31.1", features = ["glow"] }
+chrono = "0.4"
