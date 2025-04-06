@@ -1,0 +1,16 @@
+# Test Tracker List
+# Format: One domain per line
+# Comments start with #
+
+# Common ad/tracking domains
+googleadservices.com
+doubleclick.net
+adservice.google.com
+analytics.google.com
+ads.facebook.com
+pixel.facebook.com
+analytics.twitter.com
+
+# Test entries
+example-tracker.com
+tracker.example.org
