@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use crate::tracker_blocker::TrackerBlocker;
+use crate::ai_tracker::AITracker;
 
 /// Statistics for a specific domain
 #[derive(Clone, Debug)]
@@ -10,6 +11,7 @@ pub struct DomainStat {
     pub requests: usize,
     pub blocked: usize,
     pub last_seen: DateTime<Utc>,
+    pub bandwidth_saved: Arc<Mutex<u64>>,
 }
 
 /// Shared state between the proxy and the UI.
@@ -36,6 +38,15 @@ pub struct SharedState {
 
     /// Total blocked requests
     pub blocked_count: Arc<Mutex<usize>>,
+
+    /// AI tracker for heuristic detection
+    pub ai_tracker: Arc<Mutex<AITracker>>,
+    
+    /// AI-suggested trackers pending user review
+    pub ai_suggested_trackers: Arc<Mutex<Vec<String>>>,
+
+    /// Total bandwidth saved by blocking trackers
+    pub bandwidth_saved: Arc<Mutex<u64>>, 
 }
 
 impl SharedState {
@@ -48,6 +59,9 @@ impl SharedState {
             stats: Arc::new(Mutex::new(HashMap::new())),
             allowed_count: Arc::new(Mutex::new(0)),
             blocked_count: Arc::new(Mutex::new(0)),
+            ai_tracker: Arc::new(Mutex::new(AITracker::new())),
+            ai_suggested_trackers: Arc::new(Mutex::new(Vec::new())),
+            bandwidth_saved: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -120,6 +134,21 @@ impl SharedState {
         }
         self.append_log("🧹 Logs cleared".to_string());
     }
+
+    // Method to track bandwidth
+    pub fn track_bandwidth(&self, bytes: u64, blocked: bool) {
+        if blocked {
+            if let Ok(mut saved) = self.bandwidth_saved.lock() {
+                *saved += bytes;
+            }
+        }
+    }
+
+    // Method to get total bandwidth saved
+    pub fn get_bandwidth_saved(&self) -> u64 {
+        self.bandwidth_saved.lock().map(|s| *s).unwrap_or(0)
+    }
+    
     
     // Statistics methods
     
@@ -131,6 +160,7 @@ impl SharedState {
                 requests: 0,
                 blocked: 0,
                 last_seen: Utc::now(),
+                bandwidth_saved: Arc::new(Mutex::new(0)), 
             });
             
             entry.requests += 1;
@@ -219,5 +249,132 @@ impl SharedState {
         } else {
             Err("Failed to lock blocker".to_string())
         }
+    }
+
+    // AI tracker methods
+
+    pub fn enable_ai_detection(&self) {
+        if let Ok(mut tracker) = self.ai_tracker.lock() {
+            tracker.enable();
+        }
+        self.append_log("🤖 AI tracker detection enabled".to_string());
+    }
+    
+    pub fn disable_ai_detection(&self) {
+        if let Ok(mut tracker) = self.ai_tracker.lock() {
+            tracker.disable();
+        }
+        self.append_log("🤖 AI tracker detection disabled".to_string());
+    }
+    
+    pub fn is_ai_detection_enabled(&self) -> bool {
+        if let Ok(tracker) = self.ai_tracker.lock() {
+            tracker.is_enabled()
+        } else {
+            false
+        }
+    }
+    
+    pub fn set_ai_confidence_threshold(&self, threshold: f32) {
+        if let Ok(mut tracker) = self.ai_tracker.lock() {
+            tracker.set_confidence_threshold(threshold);
+        }
+        self.append_log(format!("🤖 AI confidence threshold set to {:.2}", threshold));
+    }
+    
+    pub fn get_ai_confidence_threshold(&self) -> f32 {
+        if let Ok(tracker) = self.ai_tracker.lock() {
+            tracker.get_confidence_threshold()
+        } else {
+            0.65 // Default
+        }
+    }
+    
+    pub fn add_ai_suggested_tracker(&self, domain: &str) {
+        if let Ok(mut suggested) = self.ai_suggested_trackers.lock() {
+            if !suggested.contains(&domain.to_string()) {
+                suggested.push(domain.to_string());
+                self.append_log(format!("🤖 Added domain to AI suggestions: {}", domain));
+            }
+        }
+    }
+    
+    pub fn get_ai_suggested_trackers(&self) -> Vec<String> {
+        if let Ok(suggested) = self.ai_suggested_trackers.lock() {
+            suggested.clone()
+        } else {
+            Vec::new()
+        }
+    }
+    
+    pub fn clear_ai_suggested_trackers(&self) {
+        if let Ok(mut suggested) = self.ai_suggested_trackers.lock() {
+            suggested.clear();
+        }
+        self.append_log("🤖 Cleared AI suggested trackers".to_string());
+    }
+    
+    pub fn approve_ai_suggestion(&self, domain: &str) -> Result<(), String> {
+        // First add to blocklist
+        self.add_tracker(domain)?;
+        
+        // Then remove from suggestions
+        if let Ok(mut suggested) = self.ai_suggested_trackers.lock() {
+            suggested.retain(|d| d != domain);
+        }
+        
+        // Finally, inform the AI that its suggestion was correct
+        if let Ok(mut tracker) = self.ai_tracker.lock() {
+            tracker.report_false_negative(domain);
+        }
+        
+        self.append_log(format!("✅ Approved AI-suggested tracker: {}", domain));
+        Ok(())
+    }
+    
+    pub fn reject_ai_suggestion(&self, domain: &str) {
+        if let Ok(mut suggested) = self.ai_suggested_trackers.lock() {
+            suggested.retain(|d| d != domain);
+        }
+        
+        // Inform the AI that its suggestion was incorrect
+        if let Ok(mut tracker) = self.ai_tracker.lock() {
+            tracker.report_false_positive(domain);
+        }
+        
+        self.append_log(format!("❌ Rejected AI-suggested tracker: {}", domain));
+    }
+    
+    pub fn get_ai_stats(&self) -> (usize, usize, usize) {
+        if let Ok(tracker) = self.ai_tracker.lock() {
+            tracker.get_stats()
+        } else {
+            (0, 0, 0)
+        }
+    }
+    
+    pub fn reset_ai_stats(&self) {
+        if let Ok(mut tracker) = self.ai_tracker.lock() {
+            tracker.reset_stats();
+        }
+        self.append_log("🤖 Reset AI tracker statistics".to_string());
+    }
+    
+    pub fn save_ai_model<P: AsRef<std::path::Path>>(&self, path: P) -> std::io::Result<()> {
+        if let Ok(tracker) = self.ai_tracker.lock() {
+            tracker.save(path)?;
+            self.append_log("💾 Saved AI model to file".to_string());
+        }
+        Ok(())
+    }
+    
+    pub fn load_ai_model<P: AsRef<std::path::Path>>(&self, path: P) -> std::io::Result<()> {
+        if let Ok(model) = AITracker::load(path) {
+            if let Ok(mut tracker) = self.ai_tracker.lock() {
+                *tracker = model;
+            }
+            self.append_log("📂 Loaded AI model from file".to_string());
+        }
+        Ok(())
     }
 }

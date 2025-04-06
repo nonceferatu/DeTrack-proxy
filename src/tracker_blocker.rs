@@ -1,27 +1,45 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self}; // Removed unused Write import
+use std::io::{self}; 
 use std::path::{Path, PathBuf};
+use chrono::Local;
+use url::Url;
 
 pub struct TrackerBlocker {
     trackers: HashSet<String>,
     tracker_file_path: PathBuf,
+    tracking_params: HashSet<String>,
 }
 
 impl TrackerBlocker {
+    /// Create a new TrackerBlocker from a file path
+    /// 
+    /// # Arguments
+    /// * `tracker_file` - Path to the tracker list file
+    /// 
+    /// # Behavior
+    /// - If file doesn't exist, creates an empty file
+    /// - Loads trackers, ignoring empty lines and comments
+    /// - Converts trackers to lowercase
     pub fn new<P: AsRef<Path>>(tracker_file: P) -> std::io::Result<Self> {
         let file_path = tracker_file.as_ref().to_path_buf();
+        
+        // Ensure directory exists
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Read file content, create if not exists
         let content = match fs::read_to_string(&file_path) {
             Ok(content) => content,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                // Create an empty file if it doesn't exist
-                fs::create_dir_all(file_path.parent().unwrap_or(Path::new("./")))?;
                 fs::write(&file_path, "")?;
                 String::new()
             },
             Err(e) => return Err(e),
         };
         
+        // Parse trackers, ignoring comments and empty lines
         let trackers = content
             .lines()
             .filter(|line| {
@@ -31,19 +49,30 @@ impl TrackerBlocker {
             .map(|line| line.trim().to_lowercase())
             .collect();
         
-        println!("✅ Loaded {} trackers from {:?}", 
-                 content.lines().filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#')).count(), 
-                 file_path);
-        
+        // Predefined tracking parameters
+        let tracking_params = [
+            "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+            "fbclid", "gclid", "msclkid", "dclid", "twclid", 
+            "_ga", "_hsenc", "_openstat", "ref", "referrer", "source",
+            "mc_cid", "mc_eid", // Mailchimp
+            "wickedid", // Wicked Reports
+            "yclid", // Yandex
+        ].iter().map(|&s| s.to_string()).collect();
+
         Ok(Self { 
             trackers,
             tracker_file_path: file_path,
+            tracking_params,
         })
     }
 
+    /// Check if a host is blocked
+    /// 
+    /// # Behavior
+    /// - If no trackers are loaded, nothing is blocked
+    /// - Checks for exact and subdomain matches
     pub fn is_blocked(&self, host: &str) -> bool {
         if self.trackers.is_empty() {
-            // If no trackers are loaded, don't block anything
             return false;
         }
         
@@ -55,8 +84,7 @@ impl TrackerBlocker {
             return true;
         }
         
-        // Check for domain suffix matches
-        // e.g., if "example.com" is blocked, "sub.example.com" should also be blocked
+        // Domain suffix matches
         for tracker in &self.trackers {
             if host.ends_with(&format!(".{}", tracker)) {
                 println!("🚫 Blocked domain suffix match: {} (matches {})", host, tracker);
@@ -68,7 +96,7 @@ impl TrackerBlocker {
         false
     }
     
-    // Add a new tracker to the list
+    /// Add a new tracker to the list
     pub fn add_tracker(&mut self, domain: &str) -> io::Result<()> {
         let domain = domain.trim().to_lowercase();
         
@@ -84,7 +112,7 @@ impl TrackerBlocker {
         self.save_trackers()
     }
     
-    // Remove a tracker from the list
+    /// Remove a tracker from the list
     pub fn remove_tracker(&mut self, domain: &str) -> io::Result<()> {
         let domain = domain.trim().to_lowercase();
         
@@ -95,19 +123,19 @@ impl TrackerBlocker {
         self.save_trackers()
     }
     
-    // Save the current tracker list to file
+    /// Save current tracker list to file
     fn save_trackers(&self) -> io::Result<()> {
         // Sort trackers for consistent file format
         let mut sorted_trackers: Vec<&String> = self.trackers.iter().collect();
         sorted_trackers.sort();
         
-        // Prepare file content
+        // Prepare file content with header
         let content = format!(
             "# Tracker list for DeTrack Proxy\n\
              # Updated: {}\n\
              # Format: One domain per line\n\
              {}\n",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            Local::now().format("%Y-%m-%d %H:%M:%S"),
             sorted_trackers.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n")
         );
         
@@ -115,19 +143,19 @@ impl TrackerBlocker {
         fs::write(&self.tracker_file_path, content)
     }
     
-    // Get a vector of all trackers
+    /// Get a sorted vector of all trackers
     pub fn get_trackers(&self) -> Vec<String> {
         let mut trackers: Vec<String> = self.trackers.iter().cloned().collect();
         trackers.sort();
         trackers
     }
     
-    // Get the number of trackers
+    /// Get the number of trackers
     pub fn tracker_count(&self) -> usize {
         self.trackers.len()
     }
     
-    // Print all loaded trackers for debugging
+    /// Print all loaded trackers (for debugging)
     pub fn print_loaded_trackers(&self) {
         println!("====== Loaded Trackers: ======");
         println!("Total trackers: {}", self.trackers.len());
@@ -141,7 +169,7 @@ impl TrackerBlocker {
         println!("==============================");
     }
     
-    // Import trackers from another file
+    /// Import trackers from another file
     pub fn import_trackers<P: AsRef<Path>>(&mut self, import_file: P) -> io::Result<usize> {
         let content = fs::read_to_string(import_file)?;
         
@@ -168,7 +196,7 @@ impl TrackerBlocker {
         Ok(added_count)
     }
     
-    // Export trackers to another file
+    /// Export trackers to another file
     pub fn export_trackers<P: AsRef<Path>>(&self, export_file: P) -> io::Result<usize> {
         let mut sorted_trackers: Vec<&String> = self.trackers.iter().collect();
         sorted_trackers.sort();
@@ -179,7 +207,7 @@ impl TrackerBlocker {
              # Exported: {}\n\
              # Total domains: {}\n\
              {}\n",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            Local::now().format("%Y-%m-%d %H:%M:%S"),
             sorted_trackers.len(),
             sorted_trackers.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n")
         );
@@ -188,5 +216,64 @@ impl TrackerBlocker {
         fs::write(export_file, content)?;
         
         Ok(sorted_trackers.len())
+    }
+
+    /// Check if a parameter is a tracking parameter
+    pub fn is_tracking_parameter(&self, param_name: &str) -> bool {
+        self.tracking_params.contains(&param_name.to_lowercase())
+    }
+
+    /// Clean URL by removing tracking parameters
+    pub fn clean_url(&self, url_str: &str) -> String {
+        match Url::parse(url_str) {
+            Ok(mut parsed_url) => {
+                // Get existing query parameters
+                let mut new_query_pairs = Vec::new();
+                let pairs = parsed_url.query_pairs();
+                
+                // Filter out tracking parameters
+                for (key, value) in pairs {
+                    if !self.is_tracking_parameter(&key) {
+                        new_query_pairs.push((key.to_string(), value.to_string()));
+                    }
+                }
+                
+                // Clear existing query
+                parsed_url.set_query(None);
+                
+                // Add back non-tracking parameters
+                if !new_query_pairs.is_empty() {
+                    let query_string = new_query_pairs
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect::<Vec<String>>()
+                        .join("&");
+                        
+                    parsed_url.set_query(Some(&query_string));
+                }
+                
+                parsed_url.to_string()
+            },
+            Err(_) => {
+                // Return original if parsing fails
+                url_str.to_string()
+            }
+        }
+    }
+}
+
+// Optional: Implement Default for easier initialization
+impl Default for TrackerBlocker {
+    fn default() -> Self {
+        // Attempt to create with a default tracker list file
+        Self::new("trackers.txt").unwrap_or_else(|_| Self {
+            trackers: HashSet::new(),
+            tracker_file_path: PathBuf::from("trackers.txt"),
+            tracking_params: [
+                "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+                "fbclid", "gclid", "msclkid", "dclid", "twclid", 
+                "_ga", "_hsenc", "_openstat", "ref", "referrer", "source",
+            ].iter().map(|&s| s.to_string()).collect(),
+        })
     }
 }

@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::path::Path;
 use eframe::{egui, App, Frame, CreationContext};
 use egui::{Color32, RichText, Ui};
+use image;
 
 use detrack_proxy::{
     shared_state::SharedState,
@@ -18,6 +20,7 @@ enum Tab {
     BlockList,
     Settings,
     About,
+    AI,
 }
 
 struct RequestViewerApp {
@@ -28,6 +31,8 @@ struct RequestViewerApp {
     show_blocked_only: bool,
     max_logs: usize,
     auto_scroll: bool,
+    ai_suggestions_showing: bool,
+    logo_texture: Option<egui::TextureHandle>,
 }
 
 impl RequestViewerApp {
@@ -40,6 +45,8 @@ impl RequestViewerApp {
             show_blocked_only: false,
             max_logs: 1000,
             auto_scroll: true,
+            ai_suggestions_showing: true,
+            logo_texture: None,
         }
     }
 
@@ -57,7 +64,7 @@ impl RequestViewerApp {
             };
             ui.label(status_text);
             
-            if ui.button(if enabled { "🛑 Stop Proxy" } else { "▶️ Start Proxy" }).clicked() {
+            if ui.button(if enabled { "🚫 Stop Proxy" } else { "▶️ Start Proxy" }).clicked() {
                 if enabled {
                     self.state.disable_proxy();
                 } else {
@@ -74,7 +81,7 @@ impl RequestViewerApp {
                 }
             }
             
-            if ui.button("🧹 Clear Logs").clicked() {
+            if ui.button("💨 Clear Logs").clicked() {
                 self.state.clear_logs();
             }
         });
@@ -140,6 +147,17 @@ impl RequestViewerApp {
                 ui.label(text);
             }
         });
+
+
+        // Bandwidth section
+        ui.add_space(16.0);
+
+        ui.heading("Bandwidth Savings");
+        ui.add_space(8.0);
+
+        let saved_bytes = self.state.get_bandwidth_saved();
+        ui.label(format!("Total Saved: {:.2} MB", 
+        saved_bytes as f64 / 1_000_000.0));
     }
 
     fn render_logs(&mut self, ui: &mut Ui) {
@@ -158,7 +176,7 @@ impl RequestViewerApp {
             
             ui.checkbox(&mut self.auto_scroll, "Auto-scroll");
             
-            if ui.button("🧹 Clear Logs").clicked() {
+            if ui.button("💨 Clear Logs").clicked() {
                 self.state.clear_logs();
             }
         });
@@ -297,7 +315,7 @@ impl RequestViewerApp {
         ui.add_space(8.0);
         
         // Proxy controls
-        if ui.button(if enabled { "🛑 Stop Proxy" } else { "▶️ Start Proxy" }).clicked() {
+        if ui.button(if enabled { "🚫 Stop Proxy" } else { "▶️ Start Proxy" }).clicked() {
             if enabled {
                 self.state.disable_proxy();
             } else {
@@ -335,7 +353,7 @@ impl RequestViewerApp {
             }
         }
         
-        if ui.button("🧹 Clear Logs").clicked() {
+        if ui.button("💨 Clear Logs").clicked() {
             self.state.clear_logs();
         }
         
@@ -354,7 +372,7 @@ impl RequestViewerApp {
         
         ui.collapsing("Browser Setup Instructions", |ui| {
             ui.heading("Chrome / Edge");
-            ui.label("1. Open Settings → Advanced → System → Open your computer's proxy settings");
+            ui.label("1. Open Settings -> Advanced -> System -> Open your computer's proxy settings");
             ui.label("2. In Windows, switch 'Use a proxy server' to ON");
             ui.label("3. Set Address to 127.0.0.1 and Port to 8100");
             ui.label("4. Click Save");
@@ -362,7 +380,7 @@ impl RequestViewerApp {
             ui.add_space(8.0);
             
             ui.heading("Firefox");
-            ui.label("1. Open Settings → General → Network Settings");
+            ui.label("1. Open Settings -> General -> Network Settings");
             ui.label("2. Select 'Manual proxy configuration'");
             ui.label("3. Set HTTP Proxy to 127.0.0.1 and Port to 8100");
             ui.label("4. Check 'Also use this proxy for HTTPS'");
@@ -416,24 +434,227 @@ impl RequestViewerApp {
         ui.label("DeTrack Proxy uses a curated list of known trackers and ad servers.");
         ui.label("Special thanks to the open source projects that made this possible.");
     }
+
+    fn render_ai_tab(&mut self, ui: &mut Ui) {
+        ui.heading("AI Tracker Detection");
+        ui.add_space(16.0);
+        
+        // AI Status
+        let enabled = self.state.is_ai_detection_enabled();
+        ui.horizontal(|ui| {
+            ui.label("AI Detection Status:");
+            let status_text = if enabled {
+                RichText::new("Enabled").color(Color32::GREEN)
+            } else {
+                RichText::new("Disabled").color(Color32::RED)
+            };
+            ui.label(status_text);
+        });
+        
+        ui.add_space(8.0);
+        
+        // AI Controls
+        if ui.button(if enabled { "🔴 Disable AI" } else { "🟢 Enable AI" }).clicked() {
+            if enabled {
+                self.state.disable_ai_detection();
+            } else {
+                self.state.enable_ai_detection();
+            }
+        }
+        
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(16.0);
+        
+        // AI Sensitivity
+        ui.heading("AI Sensitivity");
+        ui.add_space(8.0);
+        
+        let mut threshold = self.state.get_ai_confidence_threshold();
+        ui.horizontal(|ui| {
+            ui.label("Detection Threshold:");
+            if ui.add(egui::Slider::new(&mut threshold, 0.0..=1.0).text("Confidence")).changed() {
+                self.state.set_ai_confidence_threshold(threshold);
+            }
+        });
+        
+        ui.label(
+            if threshold < 0.4 {
+                "Low threshold: More trackers detected but higher chance of false positives"
+            } else if threshold > 0.7 {
+                "High threshold: Only high-confidence trackers detected, fewer false positives"
+            } else {
+                "Balanced threshold: Moderate detection with reasonable accuracy"
+            }
+        );
+        
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(16.0);
+        
+        // AI Statistics
+        ui.heading("AI Detection Statistics");
+        ui.add_space(8.0);
+        
+        let (detections, false_positives, false_negatives) = self.state.get_ai_stats();
+        
+        egui::Grid::new("ai_stats_grid").num_columns(2).spacing([40.0, 8.0]).show(ui, |ui| {
+            ui.label("Total Detections:");
+            ui.label(format!("{}", detections));
+            ui.end_row();
+            
+            ui.label("False Positives (Rejected):");
+            ui.label(format!("{}", false_positives));
+            ui.end_row();
+            
+            ui.label("False Negatives (Manually Added):");
+            ui.label(format!("{}", false_negatives));
+            ui.end_row();
+            
+            ui.label("Accuracy:");
+            let accuracy = if detections + false_negatives > 0 {
+                100.0 - (false_positives as f32 / (detections + false_negatives) as f32 * 100.0)
+            } else {
+                100.0
+            };
+            ui.label(format!("{:.1}%", accuracy));
+            ui.end_row();
+        });
+        
+        if ui.button("Reset Statistics").clicked() {
+            self.state.reset_ai_stats();
+        }
+        
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(16.0);
+        
+        // AI Suggested Trackers
+        ui.heading("AI-Suggested Trackers");
+        ui.add_space(8.0);
+        
+        let suggestions = self.state.get_ai_suggested_trackers();
+        
+        ui.label(format!("Pending suggestions: {}", suggestions.len()));
+        
+        if suggestions.is_empty() {
+            ui.label("No suggestions yet. AI will suggest trackers as it detects them.");
+        } else {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for domain in &suggestions {
+                    ui.horizontal(|ui| {
+                        ui.label(domain);
+                        
+                        if ui.button("✅ Approve").clicked() {
+                            if let Err(e) = self.state.approve_ai_suggestion(domain) {
+                                self.state.append_log(format!("❌ Error approving suggestion: {}", e));
+                            }
+                        }
+                        
+                        if ui.button("❌ Reject").clicked() {
+                            self.state.reject_ai_suggestion(domain);
+                        }
+                    });
+                }
+            });
+            
+            if ui.button("Clear All Suggestions").clicked() {
+                self.state.clear_ai_suggested_trackers();
+            }
+        }
+        
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(16.0);
+        
+        // Explanation of AI detection
+        ui.heading("How AI Detection Works");
+        ui.add_space(8.0);
+        
+        ui.label("The AI detection system uses fingerprinting and heuristics to identify trackers:");
+        ui.add_space(4.0);
+        
+        egui::Grid::new("ai_features_grid").num_columns(2).spacing([20.0, 8.0]).show(ui, |ui| {
+            ui.label("• Tracking Parameters");
+            ui.label("Detects common tracking query parameters (UTM, fbclid, etc.)");
+            ui.end_row();
+            
+            ui.label("• Domain Entropy");
+            ui.label("Identifies randomly generated domains common in tracking networks");
+            ui.end_row();
+            
+            ui.label("• Path Analysis");
+            ui.label("Recognizes suspicious paths like /pixel, /beacon, /track");
+            ui.end_row();
+            
+            ui.label("• Third-Party Status");
+            ui.label("Detects resources loaded from domains different than the page");
+            ui.end_row();
+            
+            ui.label("• Keyword Detection");
+            ui.label("Identifies tracking-related terms in URLs and paths");
+            ui.end_row();
+        });
+        
+        ui.add_space(8.0);
+        ui.label("When potential trackers are detected, they're added to the suggestion queue above for your review.");
+    }
 }
 
 impl App for RequestViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // Load the logo texture if not already loaded
+        if self.logo_texture.is_none() {
+            let logo_path = Path::new("assets/DeTrack_logo.png");
+            if logo_path.exists() {
+                // Load image using the image crate
+                if let Ok(img) = image::open(logo_path) {
+                    let img_rgba8 = img.to_rgba8();
+                    let size = [img_rgba8.width() as _, img_rgba8.height() as _];
+                    
+                    // Create a Vec<u8> to hold the image data
+                    let image_data = img_rgba8.as_raw().to_vec();
+                    
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                        size,
+                        &image_data,
+                    );
+                    
+                    // Create texture handle
+                    let texture = ctx.load_texture(
+                        "logo",
+                        color_image,
+                        Default::default(),
+                    );
+                    
+                    self.logo_texture = Some(texture);
+                }
+            }
+        }
+
         // Force a repaint to update UI frequently
         ctx.request_repaint_after(Duration::from_millis(500));
         
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("🕵️ DeTrack Proxy");
+                // Display logo if loaded - fixed for egui 0.31.1
+                if let Some(texture) = &self.logo_texture {
+                    // For egui 0.31.1, we need to create a tuple of (TextureId, Vec2)
+                    let image_source = (texture.id(), egui::vec2(32.0, 32.0));
+                    ui.add(egui::Image::new(image_source));
+                    ui.add_space(8.0);
+                }
+                
+                ui.heading("DeTrack Proxy");
                 ui.add_space(32.0);
                 
                 // Navigation tabs
                 ui.selectable_value(&mut self.selected_tab, Tab::Dashboard, "📊 Dashboard");
                 ui.selectable_value(&mut self.selected_tab, Tab::Logs, "📝 Logs");
                 ui.selectable_value(&mut self.selected_tab, Tab::BlockList, "🚫 Blocklist");
-                ui.selectable_value(&mut self.selected_tab, Tab::Settings, "⚙️ Settings");
-                ui.selectable_value(&mut self.selected_tab, Tab::About, "ℹ️ About");
+                ui.selectable_value(&mut self.selected_tab, Tab::AI, "🔍 AI");
+                ui.selectable_value(&mut self.selected_tab, Tab::Settings, "🔧 Settings");
+                ui.selectable_value(&mut self.selected_tab, Tab::About, "❓ About");
                 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let enabled = self.state.is_proxy_enabled();
@@ -450,6 +671,18 @@ impl App for RequestViewerApp {
                 ui.label("Proxy Address: 127.0.0.1:8100");
                 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Show AI status if enabled
+                    if self.state.is_ai_detection_enabled() {
+                        // Show number of AI suggestions if any
+                        let suggestions = self.state.get_ai_suggested_trackers();
+                        if !suggestions.is_empty() {
+                            ui.label(RichText::new(format!("🤖 {} suggestions", suggestions.len()))
+                                .color(Color32::LIGHT_BLUE));
+                        } else {
+                            ui.label(RichText::new("🤖 AI Active").color(Color32::LIGHT_BLUE));
+                        }
+                    }
+                    
                     // Get domain stats from logs (simple approach)
                     let domain_count = match self.state.get_stats().len() {
                         0 => "No domains tracked yet".to_string(),
@@ -473,6 +706,7 @@ impl App for RequestViewerApp {
                 Tab::BlockList => self.render_blocklist(ui),
                 Tab::Settings => self.render_settings(ui),
                 Tab::About => self.render_about(ui),
+                Tab::AI => self.render_ai_tab(ui),
             }
         });
     }
@@ -500,9 +734,32 @@ fn main() -> Result<(), eframe::Error> {
     // Launch the egui desktop app with correct options for the newer eframe version
     let mut native_options = eframe::NativeOptions::default();
     
-    // For newer eframe versions (0.22+), use these options:
+    // Icon loading logic
+    let icon_data = match image::open("assets/DeTrack_logo.png") {
+        Ok(img) => {
+            let img_rgba8 = img.to_rgba8();
+            let width = img_rgba8.width();
+            let height = img_rgba8.height();
+            let rgba = img_rgba8.into_raw();
+            
+            Some(Arc::new(egui::IconData {
+                width,
+                height,
+                rgba,
+            }))
+        },
+        Err(_) => None
+    };
+    
+    // Set the icon if loaded successfully
+    native_options.viewport.icon = icon_data;
+
+    // Set viewport options
     native_options.viewport.inner_size = Some(egui::vec2(900.0, 650.0));
     native_options.viewport.min_inner_size = Some(egui::vec2(600.0, 400.0));
+    
+    // Set window title and other basic properties
+    native_options.viewport.title = Some("DeTrack Proxy".to_string());
     
     eframe::run_native(
         "DeTrack Proxy",

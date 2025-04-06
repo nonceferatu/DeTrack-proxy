@@ -1,16 +1,14 @@
-# Test Tracker List
+# Tracker list for DeTrack Proxy
+# Updated: 2025-04-06 09:13:38
 # Format: One domain per line
-# Comments start with #
-
-# Common ad/tracking domains
-googleadservices.com
-doubleclick.net
+ads.facebook.com
 adservice.google.com
 analytics.google.com
-ads.facebook.com
-pixel.facebook.com
 analytics.twitter.com
-
-# Test entries
+beacon-v2.helpscout.net
+doubleclick.net
 example-tracker.com
+fonts.gstatic.com
+googleadservices.com
+pixel.facebook.com
 tracker.example.org

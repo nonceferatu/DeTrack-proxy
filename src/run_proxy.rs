@@ -9,6 +9,8 @@ use hyper::{
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::{io, net::{TcpListener, TcpStream}};
+use std::str::FromStr;
+use hyper::Uri;
 
 use crate::shared_state::SharedState;
 
@@ -55,7 +57,7 @@ pub async fn run_proxy(state: Arc<SharedState>) -> Result<(), Box<dyn std::error
 }
 
 async fn proxy(
-    req: Request<Body>,
+    mut req: Request<Body>,
     state: Arc<SharedState>,
 ) -> Result<Response<ResponseBody>, Infallible> {
     // Extract host for logging and store locally
@@ -67,6 +69,25 @@ async fn proxy(
     if state.is_logging_enabled() {
         let log_entry = format!("{} {} {}", method, host, path);
         state.append_log(log_entry);
+    }
+
+    // URL cleaning (before other checks)
+    if req.method() != Method::CONNECT {
+        if let Ok(blocker) = state.blocker.lock() {
+            let original_uri_str = req.uri().to_string();
+            let cleaned_uri_str = blocker.clean_url(&original_uri_str);
+
+            if original_uri_str != cleaned_uri_str {
+                if state.is_logging_enabled() {
+                    state.append_log(format!("🧹 Cleaned URL parameters: {} -> {}", original_uri_str, cleaned_uri_str));
+                }
+
+                // Create a new request with the cleaned URI
+                if let Ok(cleaned_uri) = cleaned_uri_str.parse::<Uri>() {
+                    *req.uri_mut() = cleaned_uri;
+                }
+            }
+        }
     }
 
     if !state.is_proxy_enabled() {
@@ -101,7 +122,7 @@ async fn proxy(
                 .body(full("🔌 Proxy is currently disabled — request blocked"))
                 .unwrap());
         }
-    }    
+    }
 
     // Check for tracker blocking for HTTP requests
     let is_blocked = match state.blocker.lock() {
@@ -126,6 +147,49 @@ async fn proxy(
         return Ok(Response::builder()
             .status(StatusCode::FORBIDDEN)
             .body(full(format!("🚫 Blocked request to tracker: {}", host)))
+            .unwrap());
+    }
+
+    // If not blocked by static list, check with AI detection
+    let ai_detected = if state.is_ai_detection_enabled() {
+        let url_string = req.uri().to_string();
+        
+        // Get referer header if available
+        let referer = req.headers()
+            .get(hyper::header::REFERER)
+            .and_then(|value| value.to_str().ok());
+        
+        // Check with AI detection
+        let is_tracker = if let Ok(mut tracker) = state.ai_tracker.lock() {
+            tracker.is_likely_tracker(&url_string, &host, referer)
+        } else {
+            false
+        };
+        
+        if is_tracker {
+            // Add to suggested trackers list for user review
+            state.add_ai_suggested_tracker(&host);
+            
+            // Log the detection
+            state.append_log(format!("🤖 AI detected potential tracker: {}", host));
+        }
+        
+        is_tracker
+    } else {
+        false
+    };
+
+    // Optionally block AI-detected trackers immediately
+    // This could be controlled by a user setting in the future
+    let ai_block_immediately = false; // Set to true if you want immediate blocking
+    
+    if ai_detected && ai_block_immediately {
+        // Record the AI-blocked request in stats
+        state.record_request(&host, true);
+        
+        return Ok(Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(full(format!("🤖 AI detected and blocked tracker: {}", host)))
             .unwrap());
     }
 
